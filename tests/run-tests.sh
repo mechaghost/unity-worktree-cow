@@ -247,6 +247,20 @@ if [ $CLONES = 1 ]; then
   check "hydrate warns on a Unity version mismatch"   bash -c "sed -i.bak 's/6000.7.0b1/6000.8.0a1/' '$ROOT/plain/ProjectSettings/ProjectVersion.txt'; bash '$UWT' hydrate '$ROOT/plain' --force 2>&1 | grep -q 'declares'"
 else
   check "hydrate refuses with exit 2 when there is no golden" bash -c "bash '$UWT' hydrate '$ROOT/plain' >/dev/null 2>&1; [ \$? = 2 ]"
+
+  # A golden-shaped fixture reaches the clone check even on a volume that
+  # cannot produce its own golden.
+  mkdir -p "$GD/Library" "$ROOT/plain/Library"
+  printf 'vcs=git\nprefix=\n' > "$GD.txt"
+  cp "$PROJ/.git/index" "$GD.index"
+  cp "$PROJ/Library/ArtifactDB" "$ROOT/plain/Library/ArtifactDB"
+  out="$(uwt hydrate "$ROOT/plain" --force 2>&1)"; rc=$?
+  check "hydrate --force exits 2 on a volume without block cloning" [ "$rc" = 2 ]
+  check "hydrate --force reaches the clone check" grep -q 'this volume cannot block-clone' <<<"$out"
+  check "hydrate --force preserves the existing Library on refusal" \
+        cmp "$PROJ/Library/ArtifactDB" "$ROOT/plain/Library/ArtifactDB"
+  rmdir "$GD/Library" "$GD"
+  rm -f "$GD.txt" "$GD.index"
 fi
 
 # ------------------------------------------------------------------ 6. cli

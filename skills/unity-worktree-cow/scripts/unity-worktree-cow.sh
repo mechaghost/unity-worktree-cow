@@ -631,12 +631,14 @@ cmd_hydrate() (
   [ "$gpre" = "$wpre" ] || die "the golden is of the project at '${gpre:-<repo root>}', not '${wpre:-<repo root>}'"
   require_editor_closed "$wt" hydrate
   if [ "$OS" != darwin ]; then
-    if [ -d "$wt/Library" ]; then
-      [ "${OPT_FORCE:-0}" = 1 ] || die "Library/ already exists; pass --force to replace it"
-      rm -rf "$wt/Library" || die "could not remove the existing Library/"
+    if [ -d "$wt/Library" ] && [ "${OPT_FORCE:-0}" != 1 ]; then
+      die "Library/ already exists; pass --force to replace it"
     fi
     same_volume "$wt" "$gd" || die "worktree and golden are on different volumes; nothing would be shared"
     local why; why="$(cow_probe "$wt")" || die "this volume cannot block-clone ($why)"
+    if [ -d "$wt/Library" ]; then
+      rm -rf "$wt/Library" || die "could not remove the existing Library/"
+    fi
     hydrate_library "$gd" "$wt" || die "hydrate failed; Library/ removed"
     exit $EXIT_OK
   fi
