@@ -53,7 +53,7 @@ Codex or Gemini as well needs both folders; keep the full skill in one and, in
 the other, a `SKILL.md` that repeats the frontmatter and points at the first, so
 there is only one script to update.
 
-`npx skills add Unity-Technologies/unity-worktree-cow` (the `skills` CLI) does the copy for most agents.
+`npx skills add mechaghost/unity-worktree-cow` (the `skills` CLI) does the copy for most agents.
 
 An agent without skill support can be pointed at it from `AGENTS.md`:
 
@@ -80,7 +80,11 @@ $uwt measure                 # private disk of every worktree and the golden
 
 `list`, `new`, `remove` and `measure` take `--json` for agents: one record on stdout,
 human output on stderr. `new` is safe to run concurrently. `SKILL.md` has a
-recipe for one editor per worktree.
+recipe for one editor per worktree and a [local-first workflow](skills/unity-worktree-cow/SKILL.md#local-first-git-workflow).
+
+On macOS, the script uses native APFS clones. Hydration stages the Library
+before publishing it, and forced hydration swaps in the staged Library
+atomically.
 
 One bash script, all platforms. On Windows it runs under Git Bash and uses
 robocopy for the clone. Exit codes: `0` ok · `2` failure · `3` refused because
@@ -92,8 +96,9 @@ A filesystem that block-clones, with the repo and the worktrees on the same
 volume:
 
 - **Windows** — ReFS (Dev Drive) on Windows 11 24H2 or later. NTFS cannot.
-- **macOS** — APFS. Suite green; measured end to end on the 41k-file project: a fresh worktree is 0 MiB private, 1.45 GiB after a first open
-  and 100 edits, against 33.8 GiB for a plain checkout plus cold import
+- **macOS** — APFS and Python 3. In the upstream 41k-file benchmark, a fresh
+  worktree used 0 MiB of private disk and rose to 1.45 GiB after a first open
+  and 100 edits, compared with 33.8 GiB for a plain checkout plus cold import
   (23×). `new` takes 80 s there, 69 s of it the verify `git status`
   re-hashing 23.5 GB of LFS content once, because every clone has a new
   inode. Windows skips that; see `SKILL.md` Troubleshooting.

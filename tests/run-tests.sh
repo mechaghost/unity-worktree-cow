@@ -58,7 +58,7 @@ shares_blocks() {
 PROJ="$ROOT/proj"
 rm -rf "$ROOT"/proj "$ROOT"/proj-* "$ROOT"/wt-* "$ROOT"/plain
 mkdir -p "$PROJ" && cd "$PROJ" || exit 2
-git init -q && git config user.email t@t && git config user.name t && git config core.autocrlf false
+git init -q -b master && git config user.email t@t && git config user.name t && git config core.autocrlf false
 mkdir -p ProjectSettings Assets/Scenes Packages Library/PackageCache/com.x@abc Library/DataStore/00 \
          Library/Bee Library/BurstCache Library/ScriptAssemblies Library/Search Library/Pipeline Library/ShaderCache Temp obj
 printf 'm_EditorVersion: 6000.7.0b1\nm_EditorVersionWithRevision: 6000.7.0b1 (deadbeef)\n' > ProjectSettings/ProjectVersion.txt
@@ -177,10 +177,13 @@ if [ $CLONES = 1 ]; then
   check "--base picks the start commit" \
         bash -c "cd '$PROJ' && bash '$UWT' new feature/b --path '$ROOT/wt-b' --base keep >/dev/null 2>&1 && [ \"\$(git -C '$ROOT/wt-b' rev-parse HEAD)\" = \"\$(git -C '$PROJ' rev-parse keep)\" ]"
   cp "$UWT" "$PROJ/uwt-copy.sh"
+  if [ "$(uname -s)" = Darwin ]; then
+    cp "$(dirname "$UWT")/darwin-cow.py" "$PROJ/darwin-cow.py"
+  fi
   check "new warns when the uwt it runs is not committed to this repo" \
         bash -c "cd '$PROJ' && bash uwt-copy.sh new feature/nc --path '$ROOT/wt-nc' 2>&1 | grep -q 'skill is not committed'"
   check "no such warning when it is committed"           bash -c "! grep -q 'not committed' <<<\"\$(bash '$UWT' new feature/c2 --path '$ROOT/wt-c2' 2>&1)\""
-  rm -f "$PROJ/uwt-copy.sh"
+  rm -f "$PROJ/uwt-copy.sh" "$PROJ/darwin-cow.py"
   # Concurrent new: the golden is only read and every step writes inside its own
   # worktree, so parallel calls must all succeed.
   for i in 1 2 3 4; do (cd "$PROJ" && bash "$UWT" new "feature/par$i" --path "$ROOT/wt-par$i" >"$ROOT/par$i.log" 2>&1; echo $? >"$ROOT/par$i.rc") & done; wait
@@ -229,6 +232,18 @@ if [ $CLONES = 1 ]; then
   check "hydrate fills a plain git worktree"          bash -c "bash '$UWT' hydrate '$ROOT/plain' >/dev/null 2>&1 && [ -s '$ROOT/plain/Library/ArtifactDB' ]"
   check "hydrate refuses to overwrite without --force" bash -c "bash '$UWT' hydrate '$ROOT/plain' >/dev/null 2>&1; [ \$? = 2 ]"
   check "hydrate --force replaces"                    bash -c "echo junk > '$ROOT/plain/Library/JUNK'; bash '$UWT' hydrate '$ROOT/plain' --force >/dev/null 2>&1 && [ ! -e '$ROOT/plain/Library/JUNK' ]"
+  if [ "$(uname -s)" = Darwin ]; then
+    cp "$GD/Library/ArtifactDB" "$ROOT/original-artifact-db"
+    : > "$GD/Library/ArtifactDB"
+    out="$(uwt hydrate "$ROOT/plain" --force 2>&1)"; rc=$?
+    check "macOS refuses to publish a staged Library with an empty ArtifactDB" [ "$rc" = 2 ]
+    check "macOS refusal happened during staging" grep -q 'staged Library has no imported ArtifactDB' <<<"$out"
+    check "macOS failed hydration keeps the existing database" \
+          cmp "$ROOT/original-artifact-db" "$ROOT/plain/Library/ArtifactDB"
+    check "macOS failed hydration removes its staging directory" \
+          bash -c 'test -z "$(find "$1" -maxdepth 1 -name ".uwt-hydrate-*" -print)"' _ "$ROOT/plain"
+    mv "$ROOT/original-artifact-db" "$GD/Library/ArtifactDB"
+  fi
   check "hydrate warns on a Unity version mismatch"   bash -c "sed -i.bak 's/6000.7.0b1/6000.8.0a1/' '$ROOT/plain/ProjectSettings/ProjectVersion.txt'; bash '$UWT' hydrate '$ROOT/plain' --force 2>&1 | grep -q 'declares'"
 else
   check "hydrate refuses with exit 2 when there is no golden" bash -c "bash '$UWT' hydrate '$ROOT/plain' >/dev/null 2>&1; [ \$? = 2 ]"

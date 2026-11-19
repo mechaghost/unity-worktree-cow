@@ -96,6 +96,21 @@ worktree isolation, such as Claude Code's `isolation: worktree`):
 $uwt hydrate path/to/that/worktree
 ```
 
+## Local-first Git workflow
+
+Use this workflow for projects where the user keeps their primary checkout
+for interactive work. Pin the base to a local commit and create a task-specific
+branch in a hydrated worktree. Keep edits, Unity logs and validation in that
+worktree. When parallel work is requested, give each worker a separate branch
+and hydrated worktree at the same base. Have one integrator combine and verify
+the commits in a separate worktree.
+
+Keep the primary checkout, its index and pending changes intact. Keep commits
+local unless the user asks to publish. After validation, close the task's
+Editor and remove disposable worktrees with `uwt remove`. Keep the integrated
+branch and any evidence still needed. A new Codex worktree needs hydration
+before its first Unity open if the setup hook has not hydrated it.
+
 ## Commands
 
 | command | what it does |
@@ -103,7 +118,7 @@ $uwt hydrate path/to/that/worktree
 | `doctor [PATH]` | Proves this volume block-clones by doing one and reading the refcount back. Checks the golden and cache root are on the project's volume, which open-file check the interlock will use, whether an editor is live, and the golden's state. Warns on Windows when long paths are off. |
 | `seed [PATH] [--force]` | Snapshots the working tree and `Library/` (minus the deny list) plus the git index. Refuses while an editor or Data Store has the project open. Cheap; re-run after editor upgrades. |
 | `new BRANCH [--path DIR] [--base REF] [--inherit-untracked] [--init-submodules] [--verify] [--json]` | `git worktree add --no-checkout`, clone the snapshot, hand git the snapshot's index, `reset --hard` to the branch, verify zero tracked differences, clean inherited untracked files, hydrate `Library/`. Refuses before registering anything if the volume cannot clone, or if it folds case and the branch has paths that collide by case. Rolls back on failure. |
-| `hydrate [PATH] [--force]` | Gives an existing worktree a `Library/` cloned from the golden. |
+| `hydrate [PATH] [--force]` | Gives an existing worktree a `Library/` cloned from the golden. On macOS, the clone is staged before publication and `--force` swaps it in atomically. |
 | `list [PATH] [--json]` | Every worktree of the repo, including ones uwt did not create, with its branch, lock state, and whether its `Library/` came from uwt (`uwt`), from an editor (`other`), or is absent (`none`). |
 | `measure [PATH...] [--by N] [--json]` | Private disk of each worktree and the golden against all the others, by physical-block overlap, with the largest private groups. Read-only. See "Measuring it yourself". |
 | `remove PATH [--force] [--delete-branch] [--json]` | `git worktree remove` behind the editor interlock. A dirty worktree needs `--force`; a locked one needs `git worktree unlock` first. The branch is kept, or with `--delete-branch` deleted as `git branch -d` would, only when it holds no work of its own. Refuses the main worktree. |
@@ -136,7 +151,7 @@ A filesystem that block-clones, with golden and worktrees on **one volume**:
 
 - **Windows**: ReFS (Dev Drive) on Windows 11 24H2 or later. Runs under Git
   Bash and clones with robocopy. NTFS cannot clone.
-- **macOS**: APFS. `new` re-reads every tracked byte once there, so on a
+- **macOS**: APFS and Python 3. `new` re-reads every tracked byte once there, so on a
   large LFS project it takes about a minute (see Troubleshooting).
 - **Linux**: btrfs, XFS with `reflink=1`, ZFS ≥ 2.2 (`measure` excepted). ext4
   cannot.

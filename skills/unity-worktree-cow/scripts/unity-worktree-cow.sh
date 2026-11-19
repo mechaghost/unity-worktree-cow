@@ -33,6 +33,12 @@ case "$(uname -s)" in
   *)                    OS=unknown ;;
 esac
 
+# macOS needs native operations that cannot silently fall back to full copies.
+if [ "$OS" = darwin ]; then
+  UWT_NATIVE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/darwin-cow.py"
+fi
+darwin_native() { python3 "$UWT_NATIVE" "$@"; }
+
 # Library entries that never travel between worktrees. Everything else in
 # Library/ is cloned - the same thing that happens when a project directory is
 # copied or moved, which Unity supports. The deny list is the set whose worst
@@ -315,7 +321,7 @@ case_collisions() { # case_collisions <repo> <ref> | case_collisions - -> "a <->
 
 # ------------------------------------------------------------------ copy-on-write
 # Clone a directory tree. Every platform's native copy will block-clone when
-# the filesystem allows it: robocopy (Windows 24H2+ on ReFS), cp -c (APFS),
+# the filesystem allows it: robocopy (Windows 24H2+ on ReFS), clonefile (APFS),
 # cp --reflink (btrfs/XFS/ZFS). Names after <dst> are top-level entries of
 # <src> to leave out; --globs also leaves out TREE_EXCLUDE_GLOBS.
 cow_tree() { # cow_tree <src> <dst> [--globs] [exclude-name...]
@@ -340,14 +346,14 @@ cow_tree() { # cow_tree <src> <dst> [--globs] [exclude-name...]
   fi
   mkdir -p "$dst" || return 1
   for e in "$src"/* "$src"/.[!.]*; do
-    [ -e "$e" ] || continue
+    [ -e "$e" ] || [ -L "$e" ] || continue
     local n; n="$(basename "$e")"; skip=0
     for x in "$@"; do [ "$n" = "$x" ] && skip=1; done
     # shellcheck disable=SC2254
     for x in $globs; do case "$n" in $x) skip=1 ;; esac; done
     [ $skip = 1 ] && continue
     case "$OS" in
-      darwin) cp -Rpc "$e" "$dst/" ;;
+      darwin) darwin_native clone "$e" "$dst/$n" ;;
       linux)  cp -a --reflink=always "$e" "$dst/" ;;
       *)      return 1 ;;
     esac || { fail "clone failed on $n"; return 1; }
@@ -374,7 +380,9 @@ cow_probe() { # cow_probe <dir>
   head -c 8388608 /dev/urandom > "$p/a.bin" 2>/dev/null   # 8 MiB, incompressible
   local rc=1 why
   case "$OS" in
-    darwin)  if cp -c "$p/a.bin" "$p/b.bin" 2>/dev/null; then rc=0; why="APFS clonefile"; else why="cp -c rejected: not APFS"; fi ;;
+    darwin)  if why="$(darwin_native clone "$p/a.bin" "$p/b.bin" 2>&1)"; then
+               rc=0; why="APFS clonefile"
+             fi ;;
     linux)   if cp --reflink=always "$p/a.bin" "$p/b.bin" 2>/dev/null; then rc=0; why="reflink ($(fs_type "$d"))"
              else why="reflink rejected by $(fs_type "$d") (ext4 cannot; XFS needs reflink=1)"; fi ;;
     windows) mkdir -p "$p/b"
@@ -602,18 +610,19 @@ cmd_seed() {
 }
 
 # ------------------------------------------------------------------ hydrate
-hydrate_library() { # hydrate_library <golden> <worktree>
+hydrate_library() { # hydrate_library <golden> <worktree> [destination Library]
   local gd="$1" wt="$2" t0; t0=$(now)
-  cow_tree "$gd/Library" "$wt/Library" || { rm -rf "$wt/Library"; return 1; }
-  strip_never "$wt/Library"
+  local library="${3:-$wt/Library}"
+  cow_tree "$gd/Library" "$library" || { rm -rf "$library"; return 1; }
+  strip_never "$library" || return 1
   local gv wv; gv="$(golden_field "$gd" unity_version)"; wv="$(unity_version "$wt")"
   [ "$gv" = "$wv" ] || warn "golden Library is from Unity '$gv', this worktree declares '$wv'; the editor will upgrade or reimport on first open (expect extra private disk). Re-seed under the new version to avoid it."
   { echo "golden_commit=$(golden_field "$gd" commit)"; echo "golden_created=$(golden_field "$gd" created)"
-    echo "golden_unity=$gv"; echo "hydrated=$(stamp)"; } > "$wt/Library/.uwt-hydration.txt"
-  good "Library hydrated in $(( $(now) - t0 ))s ($(file_count "$wt/Library") files)"
+    echo "golden_unity=$gv"; echo "hydrated=$(stamp)"; } > "$library/.uwt-hydration.txt" || return 1
+  good "Library hydrated in $(( $(now) - t0 ))s ($(file_count "$library") files)"
 }
 
-cmd_hydrate() {
+cmd_hydrate() (
   local wt; wt="$(project_root "${1:-$PWD}")" || exit $EXIT_FAIL
   local gd; gd="$(golden_dir "$wt")"
   say ""; head_ "uwt hydrate"; say "worktree $wt"
@@ -621,15 +630,40 @@ cmd_hydrate() {
   local gpre wpre; gpre="$(golden_field "$gd" prefix)"; wpre="$(project_prefix "$wt")"
   [ "$gpre" = "$wpre" ] || die "the golden is of the project at '${gpre:-<repo root>}', not '${wpre:-<repo root>}'"
   require_editor_closed "$wt" hydrate
-  if [ -d "$wt/Library" ]; then
+  if [ "$OS" != darwin ]; then
+    if [ -d "$wt/Library" ]; then
+      [ "${OPT_FORCE:-0}" = 1 ] || die "Library/ already exists; pass --force to replace it"
+      rm -rf "$wt/Library" || die "could not remove the existing Library/"
+    fi
+    same_volume "$wt" "$gd" || die "worktree and golden are on different volumes; nothing would be shared"
+    local why; why="$(cow_probe "$wt")" || die "this volume cannot block-clone ($why)"
+    hydrate_library "$gd" "$wt" || die "hydrate failed; Library/ removed"
+    exit $EXIT_OK
+  fi
+
+  local library="$wt/Library" operation=publish
+  [ ! -L "$library" ] || die "refusing to replace a symlinked Library/"
+  if [ -e "$library" ]; then
+    [ -d "$library" ] || die "Library exists and is not a directory"
     [ "${OPT_FORCE:-0}" = 1 ] || die "Library/ already exists; pass --force to replace it"
-    rm -rf "$wt/Library" || die "could not remove the existing Library/"
+    operation=swap
   fi
   same_volume "$wt" "$gd" || die "worktree and golden are on different volumes; nothing would be shared"
   local why; why="$(cow_probe "$wt")" || die "this volume cannot block-clone ($why)"
-  hydrate_library "$gd" "$wt" || die "hydrate failed; Library/ removed"
+
+  local stage; stage="$(mktemp -d "$wt/.uwt-hydrate-XXXXXX")" || die "could not stage a replacement Library"
+  trap 'rm -rf -- "$stage"' EXIT
+  trap 'exit 2' HUP INT TERM
+  hydrate_library "$gd" "$wt" "$stage/Library" || die "hydrate failed while staging the Library"
+  [ -s "$stage/Library/ArtifactDB" ] || die "staged Library has no imported ArtifactDB"
+  require_editor_closed "$wt" hydrate
+  [ ! -L "$library" ] || die "refusing to replace a symlinked Library/"
+  # A failed rename leaves the destination untouched. On swap success, the
+  # previous Library is at the staging path and the EXIT trap removes it.
+  darwin_native "$operation" "$stage/Library" "$library" || die "could not publish the staged Library"
+  good "published $library"
   exit $EXIT_OK
-}
+)
 
 # ------------------------------------------------------------------ new
 # --base for Plastic: cs:N, lb:NAME, br:/path, a bare changeset number or a
